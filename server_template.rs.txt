@@ -1,0 +1,251 @@
+use actix_cors::Cors;
+use actix_web::{http::header, web, App, HttpServer, Responder, HttpResponse};
+use serde::{Deserialize, Serialize};
+// use reqwest::Client as HttpClient;
+// use async_trait::async_trait;
+
+use std::sync::Mutex;
+use std::collections::HashMap;
+use std::fs;
+use std::io::Write;
+
+const DB_FILE_NAME: &str = "database.json";
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Task {
+    id: u64,
+    name: String,
+    completed: bool
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct User {
+    id: u64,
+    username: String,
+    password: String
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct DataBase {
+    tasks: HashMap<u64, Task>,
+    users: HashMap<u64, User>
+}
+
+impl DataBase {
+    fn new() -> Self {
+        Self {
+            tasks: HashMap::new(),
+            users: HashMap::new()
+        }
+    }
+
+    // CRUD
+    fn create_task(&mut self, task: Task) {
+        let task_id = task.id;
+        self.tasks.insert(task.id, task);
+        match self.save_to_file() {
+            Ok(_) => println!("database updated | create_task | task id: {}", &task_id),
+            Err(_) => println!("Error | failed to update database | create_task")
+        }
+    }
+
+    fn read_task(&self, id: &u64) -> Option<&Task> {
+        self.tasks.get(id)
+    }
+
+    fn read_all_tasks(&mut self) -> Vec<&Task> {
+        self.tasks.values().collect()
+    }
+
+    fn delete_task(&mut self, id: &u64) {
+        self.tasks.remove(&id);
+        match self.save_to_file() {
+            Ok(_) => println!("database updated | delete_task | task id: {}", &id),
+            Err(_) => println!("Error | failed to update database | delete_task")
+        };
+    }
+
+    fn update_task(&mut self, task: Task) {
+        self.tasks.insert(task.id, task);
+    }
+
+    fn create_user(&mut self, user: User) {
+        let user_id = user.id;
+        self.users.insert(user.id, user);
+        match self.save_to_file() {
+            Ok(_) => println!("database updated | create_user | user id: {}", &user_id),
+            Err(_) => println!("Error | failed to update database | create_user")
+        }
+    }
+
+    // fn read_user(&self, id: &u64) -> Option<&User> {
+    //     self.users.get(id)
+    // }
+
+    // fn read_all_users(&mut self) -> Vec<&User> {
+    //     self.users.values().collect()
+    // }
+
+    // fn delete_user(&mut self, id: &u64) {
+    //     self.users.remove(id);
+    // }
+
+    // fn update_user(&mut self, user: User) {
+    //     self.users.insert(user.id, user);
+    // }
+
+    fn query_by_user(&self, username: &str) -> Option<&User> {
+        self.users.values().find(|user| user.username == username)
+    }
+
+
+    // database save
+    fn save_to_file(&self) -> std::io::Result<()> {
+        let data = serde_json::to_string(&self)?;
+        let mut file = fs::File::create(DB_FILE_NAME)?;
+        file.write_all(data.as_bytes())?;
+        Ok(())
+    }
+
+    fn load_from_file()-> std::io::Result<Self> {
+        let file_content = fs::read_to_string(DB_FILE_NAME)?;
+        let db = serde_json::from_str(&file_content)?;
+        Ok(db)
+    }
+}
+
+struct AppState {
+    db: Mutex<DataBase>,
+}
+
+async fn create_task(app_state: web::Data<AppState>, task: web::Json<Task>) -> impl Responder {
+    match app_state.db.lock() {
+        Ok(mut db) => {
+            db.create_task(task.into_inner());
+            HttpResponse::Created().finish()
+        },
+        Err(_) => {
+            HttpResponse::InternalServerError().finish()
+        }
+    }
+}
+
+async fn read_task(app_state: web::Data<AppState>, id: web::Path<u64>) -> impl Responder {
+    match app_state.db.lock() {
+        Ok(db) => {
+            match db.read_task(&id.into_inner()) {
+                Some(task) => HttpResponse::Ok().json(task),
+                None => HttpResponse::NotFound().into()
+            }
+        },
+        Err(_) => {
+            HttpResponse::InternalServerError().finish()
+        }
+    }
+}
+
+async fn read_all_tasks(app_state: web::Data<AppState>) -> impl Responder {
+    match app_state.db.lock() {
+        Ok(mut db) => {
+            HttpResponse::Ok().json(db.read_all_tasks())
+        },
+        Err(_) => {
+            return HttpResponse::InternalServerError().finish()
+        }
+    }
+}
+
+async fn delete_task(app_state: web::Data<AppState>, id: web::Path<u64>) -> impl Responder {
+    match app_state.db.lock() {
+        Ok(mut db) => {
+            db.delete_task(&id.into_inner());
+            HttpResponse::NoContent().finish()
+        },
+        Err(_) => {
+            HttpResponse::InternalServerError().finish()
+        }
+    }
+}
+
+async fn update_task(app_state: web::Data<AppState>, task: web::Json<Task>) -> impl Responder {
+    match app_state.db.lock() {
+        Ok(mut db) => {
+            db.update_task(task.into_inner());
+            HttpResponse::Accepted().finish()
+        },
+        Err(_) => {
+            HttpResponse::InternalServerError().finish()
+        }
+    }
+}
+
+async fn create_user(app_state: web::Data<AppState>, user: web::Json<User>) -> impl Responder {
+    match app_state.db.lock() {
+        Ok(mut db) => {
+            db.create_user(user.into_inner());
+            HttpResponse::Created().finish()
+        },
+        Err(_) => {
+            HttpResponse::InternalServerError().finish()
+        }
+    }
+}
+
+async fn login(app_state: web::Data<AppState>, user: web::Json<User>) -> impl Responder {
+    match app_state.db.lock() {
+        Ok(db) => {
+            match db.query_by_user(&user.username) {
+                Some(found_user) => {
+                    if found_user.password == user.password {
+                        HttpResponse::Ok().body("logged in")
+                    } else {
+                        HttpResponse::BadRequest().body("invalid password")
+                    }
+                },
+                None => HttpResponse::BadRequest().body("invalid username")
+            }
+        },
+        Err(_) => {
+            HttpResponse::InternalServerError().finish()
+        }
+    }
+}
+
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    let db = match DataBase::load_from_file() {
+        Ok(db) => db,
+        Err(_) => DataBase::new()
+    };
+
+    let data: web::Data<AppState> = web::Data::new(AppState {
+        db: Mutex::new(db)
+    });
+
+    HttpServer::new(move || {
+        App::new()
+            .wrap(
+                Cors::permissive()
+                    .allowed_origin_fn(|origin, _req_head| {
+                        origin.as_bytes().starts_with(b"http://localhost") || origin == "null"
+                    })
+                    .allowed_methods(vec!["GET", "POST", "DELETE", "PUT"])
+                    .allowed_headers(vec![header::AUTHORIZATION, header::ACCEPT])
+                    .allowed_header(header::CONTENT_TYPE)
+                    .supports_credentials()
+                    .max_age(3600)
+            )
+            .app_data(data.clone())
+            .route("/task", web::post().to(create_task))
+            .route("/task", web::get().to(read_all_tasks))
+            .route("/task", web::put().to(update_task))
+            .route("/task/{id}/", web::get().to(read_task))
+            .route("/task/{id}/", web::delete().to(delete_task))
+            .route("/register", web::post().to(create_user))
+            .route("/login", web::post().to(login))
+    })
+    .bind(("127.0.0.1", 8080))?
+    .run()
+    .await
+}
